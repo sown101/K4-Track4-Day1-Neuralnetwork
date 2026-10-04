@@ -62,6 +62,9 @@ def to_row(result: dict, eval_scores: dict | None = None, notes: str = "") -> di
     note_parts = [n for n in (result.get("notes", ""), notes) if n]
     if cfg.get("scheduler"):
         note_parts.append(f"scheduler={cfg['scheduler']}")
+    if cfg["group"] in ("init", "baseline") and s.get("act_std_step0"):
+        note_parts.append("std kích hoạt bước 0 (ReLU1, ReLU2, logit) = "
+                          + ", ".join(f"{v:.4g}" for v in s["act_std_step0"]))
     if cfg["optimizer"] in ("sgd_momentum",):
         note_parts.append(f"momentum={cfg['momentum']}")
     if cfg["optimizer"] in ("adam", "adamw"):
@@ -119,5 +122,7 @@ def write_xlsx(rows: list[dict], template_path: str, out_path: str,
             if g in summary_notes:
                 summ.cell(row=r, column=8).value = summary_notes[g]
 
+    # openpyxl không lưu giá trị đã tính của công thức: buộc Excel/LibreOffice tính lại khi mở
+    wb.calculation.fullCalcOnLoad = True
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)

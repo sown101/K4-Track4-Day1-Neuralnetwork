@@ -27,12 +27,16 @@ Mọi con số dưới đây lấy từ `experiments.xlsx` (trỏ bằng `exp_id
 
 Loss bước 0 lệch khỏi ln 7 tới 0,3 với seed 1. Lý do là khởi tạo He giữ phương sai qua các lớp, nên ở bước 0 logit có std ≈ 0,58 chứ không ≈ 0, và giá trị này đổi theo seed. Với `init-zeros` và `init-normal` (logit ≈ 0), loss bước 0 đúng bằng 1,9459 và 1,9460, nên cách tính loss là đúng. Đường cong baseline (`base-s1.png`, `compare_baseline_seeds.png`): train và val loss cùng giảm đều tới epoch 20 (val 0,472 → 0,231). Best epoch là 20/20/19 và val − train chỉ ≈ 0,02. Vậy baseline **chưa quá khớp và chưa hội tụ**. `opt-sgdm-lr0.1` và `base-s1` cho đúng cùng một F1 (0,8584), nên pipeline tái lập được.
 
+![](figures/compare_baseline_seeds.png)
+
 ## 3. Kết quả theo chủ đề
 
 ### 3.1 Hàm mất mát — CE vs MSE
-- **Dự đoán:** gradient của MSE theo logit là 2(z−y)/7, bị chặn và nhỏ, nên MSE sẽ học chậm hơn CE và kém nhất ở các lớp hiếm.
+- **Dự đoán (viết trước khi chạy):** MSE sẽ học chậm hơn CE và kém nhất ở các lớp hiếm, vì gradient của MSE theo logit "bị chặn và nhỏ". Kết luận đúng, nhưng phần lập luận "bị chặn" là **sai** (xem phần giải thích).
 - **Kết quả** (`compare_loss.png`): `loss-mse` (lr 0,1) đạt F1 **0,7329**, acc 0,8713, kém baseline 0,123 (vượt nhiễu rất xa). `loss-mse-lrx3` (lr 0,3) đạt **0,7887**: tăng lr bù được một phần nhưng vẫn kém CE 0,068.
-- **Giải thích:** grad_norm trung bình của MSE chỉ 0,087, so với 0,577 của CE. Gradient softmax(z)−y của CE không bão hoà khi dự đoán sai nặng. MSE làm macro-F1 giảm (−0,12) mạnh hơn accuracy (−0,04), tức các lớp hiếm chịu thiệt nhiều nhất. Tôi không so trực tiếp giá trị loss (MSE ≈ 0,03, CE ≈ 0,23) vì hai loss khác thang đo.
+- **Giải thích:** `nn.MSELoss` lấy trung bình trên B×7 phần tử, nên ∂L/∂z = 2(z − one_hot)/(B·7). Gradient này tuyến tính theo sai số và **không bị chặn**. Ngược lại, gradient của CE là (softmax(z) − y)/B, mỗi thành phần nằm trong [−1, 1]. Lập luận "CE không bão hoà" trong slide áp dụng cho MSE đặt sau sigmoid/softmax, không áp dụng cho MSE trên logit thô như ở đây. MSE học kém vì hai lý do khác. (i) Trong vùng mô hình thực sự đi qua (logit gần 0, như ở bước 0), một mẫu nhận gradient MSE có chuẩn 2/7 ≈ 0,29, nhỏ hơn khoảng 3 lần so với CE (≈ 0,93, gồm −6/7 cho lớp đúng và +1/7 cho mỗi lớp sai). Khớp với đo đạc: grad_norm trung bình của MSE là 0,087, của CE là 0,577. (ii) MSE kéo mọi logit về đúng 0/1, phạt cả logit đúng khi nó vượt quá 1, nên không khuyến khích khoảng cách giữa lớp đúng và lớp sai, mà khoảng cách đó mới quyết định argmax. MSE làm macro-F1 giảm (−0,12) mạnh hơn accuracy (−0,04), tức các lớp hiếm chịu thiệt nhiều nhất. Tôi không so trực tiếp giá trị loss (MSE ≈ 0,03, CE ≈ 0,23) vì hai loss khác thang đo.
+
+![](figures/compare_loss.png)
 
 ### 3.2 Bộ tối ưu hoá
 - **Dự đoán:** SGD thuần cần lr lớn hơn khoảng 10 lần so với SGD+momentum. Adam/AdamW hội tụ nhanh hơn và có thể nhỉnh hơn ở lr tốt nhất. AdamW với wd = 0 phải trùng Adam.
@@ -48,6 +52,10 @@ Loss bước 0 lệch khỏi ln 7 tới 0,3 với seed 1. Lý do là khởi tạ
 - **Kiểm chứng:** `opt-adamw-wd0-lr0.001` cho F1 0,8437, **trùng khớp** với `opt-adam-lr0.001`.
 - **Giải thích:** Adam chia bước theo √v̂ của từng tham số, nên mọi tham số tiến với tốc độ tương đương, bất kể độ lớn gradient. AdamW hơn Adam ở lr 3e-3 khoảng +0,0074 (≈ 2×2σ). Mỗi cấu hình chỉ có 1 seed nên đây là bằng chứng yếu.
 
+![](figures/compare_optimizer.png)
+
+![](figures/compare_optimizer_lr.png)
+
 ### 3.3 Hyper-parameter
 | `exp_id` | thay đổi | bước/epoch | s/epoch | val F1 | Δ vs TB baseline |
 |---|---|---|---|---|---|
@@ -61,8 +69,14 @@ Loss bước 0 lệch khỏi ln 7 tới 0,3 với seed 1. Lý do là khởi tạ
 
 Batch 2048 có ít hơn 4 lần số bước cập nhật nên kém hơn (đúng dự đoán). Tăng lr ×4 theo quy tắc tăng lr theo lô lấy lại khoảng 75% khoảng cách và không phân kỳ, dù không có warmup. **Khác dự đoán:** batch 128 có gấp 4 lần số bước nhưng không tốt hơn, mà lại chậm hơn 3,9 lần. Ở cùng lr 0,1, gradient lô nhỏ nhiễu hơn và triệt tiêu lợi ích của số bước. Mạng rộng hơn, sâu hơn hoặc huấn luyện lâu hơn đều tăng F1 vượt nhiễu, khớp với chẩn đoán "baseline thiếu khớp". Weight decay làm F1 giảm (khác dự đoán "không đổi"), vì kéo trọng số về 0 trong khi mô hình đang thiếu khớp.
 
+![](figures/compare_batch.png)
+
+![](figures/compare_hparam.png)
+
 ### 3.4 Dropout
 `drop-0.1` / `drop-0.3` / `drop-0.5` đạt val F1 **0,8368 / 0,7769 / 0,6630** (−0,019 / −0,079 / −0,193, đều vượt nhiễu). Kết quả đúng dự đoán: dropout có hại. Mô hình **không** quá khớp (val − train loss của baseline chỉ +0,022). Dropout thu hẹp khoảng cách này còn +0,011 / +0,005 / +0,004, nhưng là do làm **cả** train lẫn val loss tăng (0,24 / 0,32 / 0,40). Như vậy dropout chỉ làm mô hình thiếu khớp thêm. Ảnh: `compare_dropout.png`.
+
+![](figures/compare_dropout.png)
 
 ### 3.5 Gradient clipping
 - Tôi chọn c = **0,58** = trung vị grad_norm trung bình theo epoch của `base-s1` (0,53–0,60, gai lớn nhất 2,87 ở epoch 1). Ở lr 0,1 (`clip-0.58`), clipping kích hoạt ở **38–60%** số bước, F1 = 0,8591 (+0,003, **trong nhiễu**). Ở lr bình thường, clipping không thay đổi kết quả.
@@ -73,7 +87,9 @@ Batch 2048 có ít hơn 4 lần số bước cập nhật nên kém hơn (đúng
 | ×10 (lr = 1) | gai ‖g‖ 11,7; F1 dao động, best **0,7670** | gai 3,4; best **0,8124** (+0,045) |
 | ×30 (lr = 3) | gai ‖g‖ 163,5 ở epoch 1, sau đó F1 kẹt ở **0,0936** (đoán lớp đa số) | F1 0,1504 — vẫn hỏng |
 
-- **Giải thích:** clipping giới hạn độ dài mỗi bước cập nhật ở lr·c, nên chặn được các gai gradient đầu huấn luyện ở lr ×10. Ở lr ×30, chỉ một bước không clip cũng làm phần lớn nơ-ron ReLU "chết" (không ra NaN, `diverged` = False, nhưng mạng chỉ còn học được prior). Có clip thì bước hiệu dụng lr/(1−μ)·c vẫn quá lớn, nên clipping không thay thế được việc chọn lr hợp lý. Các so sánh lr cao chỉ có 1 seed.
+- **Giải thích:** clipping chặn chuẩn của gradient hiện tại, ‖g_t‖ ≤ c. Với SGD thuần, điều đó tương đương ‖Δw‖ ≤ lr·c. Ở đây dùng momentum 0,9 (v ← μv + g; Δw = −lr·v), nên bước cập nhật còn chứa gradient tích luỹ từ các bước trước: ‖Δw‖ ≤ lr·c/(1−μ) = 10·lr·c. Clipping không chặn trực tiếp bước cập nhật mà chặn **lượng mỗi gradient đóng góp vào vận tốc**. Ví dụ ở lr ×10, gai 11,7 bị cắt về 0,58 trước khi vào v, nên tổng dịch chuyển nó gây ra (cộng dồn qua momentum) giảm khoảng 20 lần. Nhờ vậy clipping chặn được các gai gradient đầu huấn luyện ở lr ×10. Ở lr ×30, chỉ một bước không clip cũng làm phần lớn nơ-ron ReLU "chết" (không ra NaN, `diverged` = False, nhưng mạng chỉ còn học được prior). Có clip thì giới hạn lr·c/(1−μ) = 3 × 0,58 × 10 ≈ 17 cho mỗi bước vẫn quá lớn, nên clipping không thay thế được việc chọn lr hợp lý. Các so sánh lr cao chỉ có 1 seed.
+
+![](figures/compare_clipping.png)
 
 ### 3.6 Mixed precision
 | `exp_id` | precision | s/epoch | peak MB | val F1 |
@@ -84,6 +100,8 @@ Batch 2048 có ít hơn 4 lần số bước cập nhật nên kém hơn (đúng
 | `hp-wide` / `amp-wide-fp16` | M-wide FP32 / FP16 | 1,28 / 1,69 | 190,1 / 190,1 | 0,8725 / 0,8821 |
 
 Mixed precision **không nhanh hơn** trên mạng này, đúng dự đoán. FP16 chậm hơn 35% (M-wide: chậm hơn 32%), và bộ nhớ không đổi. Với MLP có 48k–161k tham số, thời gian chủ yếu đến từ chi phí gọi kernel, ép kiểu của autocast và vòng lặp Python. FP16 còn tốn thêm `unscale_` và bước kiểm tra inf của GradScaler. Bộ nhớ chủ yếu là dữ liệu FP32 nằm sẵn trên GPU. Độ chính xác: FP16 nằm trong nhiễu (−0,002). BF16 kém −0,005, vừa vượt 2σ với 1 seed, nên chưa kết luận được. GradScaler đã bỏ qua 4 bước bị tràn số. FP16 cần loss scaling vì khoảng biểu diễn hẹp (≈ 6e-5 … 65 504), gradient nhỏ bị underflow. BF16 có 8 bit mũ như FP32 nên không cần, đổi lại phần định trị kém chính xác hơn. T4 không có phần cứng BF16 nên BF16 không thể nhanh hơn ở đây.
+
+![](figures/compare_amp.png)
 
 ### 3.7 Khởi tạo tham số
 | `exp_id` | std kích hoạt bước 0 (ReLU1, ReLU2, logit) | loss bước 0 | val F1 |
@@ -96,9 +114,13 @@ Mixed precision **không nhanh hơn** trên mạng này, đúng dự đoán. FP1
 
 `zeros` hỏng đúng như dự đoán. Mọi nơ-ron trong cùng một lớp có cùng đầu ra 0 và ReLU'(0) = 0, nên gradient của W1, W2, b1, b2 bằng 0, và h2 = 0 khiến gradient của W3 cũng bằng 0. Chỉ bias lớp cuối học được, nên mạng chỉ học prior (đoán lớp 1), vì đối xứng giữa các nơ-ron không bao giờ bị phá vỡ. `normal` làm kích hoạt co khoảng 10 lần mỗi lớp, học chậm hơn (−0,008, vượt nhiễu). Trên mạng 3 lớp, Xavier ≈ He (trong nhiễu). Với mạng 30 lớp ReLU không huấn luyện (`compare_init_deep30.png`), std ở lớp 30 là: He **0,39** (ổn định), default 0,024, Xavier **6,9e-6**, normal **0**. He bù hệ số 1/2 mà ReLU cắt mất (Var = 2/n_vào), Xavier thì không. Khác biệt này chỉ quan trọng khi mạng sâu.
 
+![](figures/compare_init.png)
+
+![](figures/compare_init_deep30.png)
+
 ## 4. Đánh giá cuối trên tập eval
 
-**Cấu hình cuối** (`final-B-s1`): AdamW lr 3e-3, wd 0,01, M-wide (512-256), 40 epoch, lịch lr cosine (mỗi bước), CE, He, batch 512, FP32. Cách chọn **chỉ dựa trên val**: (1) bộ tối ưu tốt nhất ở 3.2 là AdamW 3e-3; (2) ở 3.3, độ rộng và số epoch là các yếu tố có lợi vượt nhiễu; (3) giữa hai ứng viên, (A) không cosine đạt 0,9018 và (B) có cosine đạt **0,9277**, nên chọn B. Dropout, weight decay và AMP không được dùng vì đều không có lợi trên val. Chạy B thêm 2 seed: val F1 **0,9252 ± 0,0033**.
+**Cấu hình cuối** (`final-B-s1`): AdamW lr 3e-3, wd 0,01, M-wide (512-256), 40 epoch, lịch lr cosine (mỗi bước), CE, He, batch 512, FP32. Cách chọn **chỉ dựa trên val**: (1) bộ tối ưu tốt nhất ở 3.2 là AdamW 3e-3; (2) ở 3.3, độ rộng và số epoch là các yếu tố có lợi vượt nhiễu; (3) giữa hai ứng viên, (A) không cosine đạt 0,9018 và (B) có cosine đạt **0,9277**, nên chọn B. Dropout, AMP và weight decay kiểu L2 trong SGD (`hp-wd1e-4`, kém hơn baseline trên val) không được dùng. Weight decay **tách riêng** 0,01 của AdamW vẫn được giữ, vì nó là một phần của bộ tối ưu thắng ở 3.2: `opt-adamw-lr0.003` đạt 0,8757 so với 0,8683 của `opt-adam-lr0.003` không weight decay. Chạy B thêm 2 seed: val F1 **0,9252 ± 0,0033**.
 
 | Cấu hình | Seed nộp | val macro-F1 | **eval macro-F1** | eval accuracy |
 |---|---|---|---|---|
@@ -107,6 +129,8 @@ Mixed precision **không nhanh hơn** trên mạng này, đúng dự đoán. FP1
 
 - Mức cải thiện trên eval là **+0,0696**. Mức này lớn hơn rất nhiều so với 2σ của baseline (0,0037) và σ của cấu hình cuối trên val (0,0033). Điểm eval chỉ có cho seed 1 của mỗi cấu hình (file nộp là của `final-B-s1`), nên độ nhiễu được ước lượng từ val.
 - Val và eval rất gần nhau (+0,0034 với baseline, +0,0037 với cấu hình cuối). Điều này khớp với việc hai tập cùng phân phối (phân tầng) và cho thấy việc chọn cấu hình theo val không bị quá khớp vào val. Baseline eval nằm ở `baseline_eval/eval_result_baseline.json`. Tôi chỉ chạy `evaluate.py` cho đúng hai cấu hình này và không chỉnh gì thêm sau đó.
+
+![](figures/compare_final.png)
 
 ### 4.1 Phân tích lỗi theo lớp (cấu hình cuối, từ `eval_result.json`)
 
@@ -140,7 +164,7 @@ Mixed precision **không nhanh hơn** trên mạng này, đúng dự đoán. FP1
 
 ## 6. Hạn chế và điều bất ngờ
 
-- **Khác dự đoán:** batch 128 không tốt hơn batch 512 dù có gấp 4 lần số bước. Weight decay 1e-4 làm F1 giảm rõ rệt. Clipping không cứu được lr ×30, và lần chạy không clip ở lr này không ra NaN mà "kẹt" ở mức đoán lớp đa số. Loss bước 0 với He cao hơn ln 7 khoảng 0,3. lr 0,3 của SGD+momentum không dao động như tôi nghĩ.
+- **Khác dự đoán:** lập luận ban đầu rằng gradient MSE "bị chặn" là sai (3.1); kết luận MSE kém hơn vẫn đúng nhưng vì lý do khác. Batch 128 không tốt hơn batch 512 dù có gấp 4 lần số bước. Weight decay 1e-4 làm F1 giảm rõ rệt. Clipping không cứu được lr ×30, và lần chạy không clip ở lr này không ra NaN mà "kẹt" ở mức đoán lớp đa số. Loss bước 0 với He cao hơn ln 7 khoảng 0,3. lr 0,3 của SGD+momentum không dao động như tôi nghĩ.
 - **Thiết kế:** chỉ baseline và cấu hình cuối có 3 seed; mọi thí nghiệm khác có 1 seed. Ngưỡng 2σ ước lượng từ 3 seed thì chính nó cũng nhiễu. Các chênh lệch cỡ 1–2×2σ (Adam vs AdamW, BF16, `init-default`) chỉ nên coi là gợi ý. Thí nghiệm batch giữ nguyên số epoch nên số bước cập nhật khác nhau; lưới lr của Adam/AdamW có tốt nhất ở biên nên có thể chưa tối ưu; lr của các thí nghiệm khác cố định ở 0,1 (tối ưu cho baseline, không nhất thiết tối ưu cho MSE, batch khác hay mạng khác). Cấu hình cuối đổi nhiều yếu tố cùng lúc, nên không tách được đóng góp riêng của cosine khi kết hợp với các yếu tố khác (chỉ so được A với B). Best epoch được chọn theo val loss chứ không theo val macro-F1. Thời gian/epoch đo trên GPU Colab dùng chung nên có dao động.
 - **Nếu có thêm thời gian:** chạy 3 seed cho mỗi thí nghiệm; mở rộng lưới lr cho Adam/AdamW (1e-2); dùng CE có trọng số lớp cho lớp 3/4/5; thêm warmup cho batch lớn; thử FP16 trên mạng rất rộng để tìm điểm mà AMP bắt đầu có lợi.
 
